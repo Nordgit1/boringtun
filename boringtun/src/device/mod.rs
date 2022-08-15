@@ -44,6 +44,7 @@ use crate::noise::handshake::parse_handshake_anon;
 use crate::noise::rate_limiter::RateLimiter;
 use crate::noise::{Packet, Tunn, TunnResult};
 use allowed_ips::AllowedIps;
+use parking_lot::Mutex;
 use peer::{AllowedIP, Peer};
 use poll::{EventPoll, EventRef, WaitResult};
 use tun::{errno_str, TunSocket};
@@ -150,9 +151,9 @@ pub struct Device {
     yield_notice: Option<EventRef>,
     exit_notice: Option<EventRef>,
 
-    peers: HashMap<x25519_dalek::PublicKey, Arc<Peer>>,
-    peers_by_ip: AllowedIps<Arc<Peer>>,
-    peers_by_idx: HashMap<u32, Arc<Peer>>,
+    peers: HashMap<x25519_dalek::PublicKey, Arc<Mutex<Peer>>>,
+    peers_by_ip: AllowedIps<Arc<Mutex<Peer>>>,
+    peers_by_idx: HashMap<u32, Arc<Mutex<Peer>>>,
     next_index: u32,
 
     pub config: DeviceConfig,
@@ -353,10 +354,13 @@ impl Device {
     fn remove_peer(&mut self, pub_key: &x25519_dalek::PublicKey) {
         if let Some(peer) = self.peers.remove(pub_key) {
             // Found a peer to remove, now purge all references to it:
-            peer.shutdown_endpoint(); // close open udp socket and free the closure
-            self.peers_by_idx.remove(&peer.index()); // peers_by_idx
+            {
+                let p = peer.lock();
+                p.shutdown_endpoint(); // close open udp socket and free the closure
+                self.peers_by_idx.remove(&p.index());
+            }
             self.peers_by_ip
-                .remove(&|p: &Arc<Peer>| Arc::ptr_eq(&peer, p)); // peers_by_ip
+                .remove(&|p: &Arc<Mutex<Peer>>| Arc::ptr_eq(&peer, p));
 
             tracing::info!("Peer removed");
         }
@@ -381,26 +385,26 @@ impl Device {
         }
 
         if let Some(peer) = self.peers.get(&pub_key) {
-            let peer = Arc::clone(peer);
+            let p = peer.lock();
 
             if let Some(endpoint) = endpoint {
-                peer.set_endpoint(endpoint);
+                p.set_endpoint(endpoint);
             }
 
             if replace_ips {
                 self.peers_by_ip
-                    .remove(&|p: &Arc<Peer>| Arc::ptr_eq(&peer, p));
-                peer.set_allowed_ips(&allowed_ips);
+                    .remove(&|p: &Arc<Mutex<Peer>>| Arc::ptr_eq(&peer, p));
+                p.set_allowed_ips(&allowed_ips);
             } else {
-                peer.add_allowed_ips(&allowed_ips);
+                p.add_allowed_ips(&allowed_ips);
             }
 
             if let Some(keepalive) = keepalive {
-                peer.set_persistent_keepalive(keepalive);
+                p.set_persistent_keepalive(keepalive);
             }
 
             if let Some(preshared_key) = preshared_key {
-                peer.set_preshared_key(preshared_key);
+                p.set_preshared_key(preshared_key);
             }
 
             for AllowedIP { addr, cidr } in allowed_ips {
@@ -427,7 +431,7 @@ impl Device {
         allowed_ips: &[AllowedIP],
         keepalive: Option<u16>,
         preshared_key: Option<[u8; 32]>,
-    ) -> Result<Arc<Peer>, Error> {
+    ) -> Result<Arc<Mutex<Peer>>, Error> {
         let next_index = self.next_index();
         let device_key_pair = self
             .key_pair
@@ -444,14 +448,14 @@ impl Device {
         )
         .unwrap();
 
-        let peer = Arc::new(Peer::new(
-            tunn,
+        let peer = Arc::new(Mutex::new(Peer::new(
+            *tunn,
             next_index,
             endpoint,
             &allowed_ips,
             preshared_key,
             self.config.protect.clone(),
-        ));
+        )));
 
         self.peers.insert(pub_key, Arc::clone(&peer));
         self.peers_by_idx.insert(next_index, Arc::clone(&peer));
@@ -544,7 +548,7 @@ impl Device {
         }
 
         for peer in self.peers.values() {
-            peer.shutdown_endpoint();
+            peer.lock().shutdown_endpoint();
         }
 
         // Then open new sockets and bind to the port
@@ -592,8 +596,7 @@ impl Device {
         let rate_limiter = Arc::new(RateLimiter::new(&public_key, HANDSHAKE_RATE_LIMIT));
 
         for peer in self.peers.values_mut() {
-            let peer_mut =
-                Arc::<Peer>::get_mut(peer).expect("set_key requires other threads to be stopped");
+            let peer_mut = peer.lock();
 
             if peer_mut
                 .tunnel
@@ -606,7 +609,7 @@ impl Device {
             {
                 // In case we encounter an error, we will remove that peer
                 // An error will be a result of bad public key/secret key combination
-                bad_peers.push(peer);
+                bad_peers.push(Arc::clone(peer));
             }
         }
 
@@ -633,7 +636,7 @@ impl Device {
 
         // Then on all currently connected sockets
         for peer in self.peers.values() {
-            if let Some(ref sock) = peer.endpoint().conn {
+            if let Some(ref sock) = peer.lock().endpoint().conn {
                 sock.set_fwmark(mark)?
             }
         }
@@ -686,15 +689,16 @@ impl Device {
 
                 // Go over each peer and invoke the timer function
                 for peer in peer_map.values() {
-                    let endpoint_addr = match peer.endpoint().addr {
+                    let mut p = peer.lock();
+                    let endpoint_addr = match p.endpoint().addr {
                         Some(addr) => addr,
                         None => continue,
                     };
 
-                    match peer.update_timers(&mut t.dst_buf[..]) {
+                    match p.update_timers(&mut t.dst_buf[..]) {
                         TunnResult::Done => {}
                         TunnResult::Err(WireGuardError::ConnectionExpired) => {
-                            peer.shutdown_endpoint(); // close open udp socket
+                            p.shutdown_endpoint(); // close open udp socket
                         }
                         TunnResult::Err(e) => tracing::error!(message = "Timer error", error = ?e),
                         TunnResult::WriteToNetwork(packet) => {
@@ -729,10 +733,11 @@ impl Device {
 
     pub(crate) fn drop_connected_sockets(&self) {
         for peer in self.peers.values() {
-            let endpoint = peer.endpoint();
+            let p = peer.lock();
+            let endpoint = p.endpoint();
             if endpoint.conn.is_some() {
                 drop(endpoint);
-                peer.shutdown_endpoint();
+                p.shutdown_endpoint();
             }
         }
     }
@@ -787,12 +792,15 @@ impl Device {
                     };
 
                     let mut public_key = String::with_capacity(64);
-                    for byte in peer.tunnel.peer_static_public().as_bytes() {
+                    for byte in peer.lock().tunnel.peer_static_public().as_bytes() {
                         public_key.push_str(&format!("{:02X}", byte));
                     }
+
+                    let p = peer.lock();
+
                     // We found a peer, use it to decapsulate the message+
                     let mut flush = false; // Are there packets to send from the queue?
-                    match peer
+                    match p
                         .tunnel
                         .handle_verified_packet(parsed_packet, &mut t.dst_buf[..])
                     {
@@ -806,11 +814,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if peer.is_allowed_ip(addr) {
+                            if p.is_allowed_ip(addr) {
                                 t.iface.write4(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v4",
@@ -823,11 +831,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if peer.is_allowed_ip(addr) {
+                            if p.is_allowed_ip(addr) {
                                 t.iface.write6(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v6",
@@ -843,7 +851,7 @@ impl Device {
                     if flush {
                         // Flush pending queue
                         while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                            p.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.sendto(packet, addr) {
                                 tracing::warn!(message = "Failed to flush queue", error = ?err, dst = ?addr);
@@ -853,9 +861,9 @@ impl Device {
 
                     // This packet was OK, that means we want to create a connected socket for this peer
                     let ip_addr = addr.ip();
-                    peer.set_endpoint(addr);
+                    p.set_endpoint(addr);
                     if d.config.use_connected_socket {
-                        if let Ok(sock) = peer.connect_endpoint(d.listen_port, d.fwmark) {
+                        if let Ok(sock) = p.connect_endpoint(d.listen_port, d.fwmark) {
                             d.register_conn_handler(Arc::clone(peer), sock, ip_addr)
                                 .unwrap();
                         }
@@ -874,7 +882,7 @@ impl Device {
 
     fn register_conn_handler(
         &self,
-        peer: Arc<Peer>,
+        peer: Arc<Mutex<Peer>>,
         udp: Arc<UDPSocket>,
         peer_addr: IpAddr,
     ) -> Result<(), Error> {
@@ -888,14 +896,15 @@ impl Device {
                 let mut iter = MAX_ITR;
 
                 let mut public_key = String::with_capacity(32);
-                for byte in peer.tunnel.peer_static_public().as_bytes() {
+                for byte in peer.lock().tunnel.peer_static_public().as_bytes() {
                     let pub_symbol = format!("{:02X}", byte);
                     public_key.push_str(&pub_symbol);
                 }
 
                 while let Ok(src) = udp.read(&mut t.src_buf[..]) {
                     let mut flush = false;
-                    match peer
+                    let p = peer.lock();
+                    match p
                         .tunnel
                         .decapsulate(Some(peer_addr), src, &mut t.dst_buf[..])
                     {
@@ -913,11 +922,14 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(
+                                    &peer.lock().tunnel.peer_static_public().to_bytes(),
+                                    packet,
+                                ) {
                                     continue;
                                 }
                             }
-                            if peer.is_allowed_ip(addr) {
+                            if p.is_allowed_ip(addr) {
                                 iface.write4(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v4",
@@ -930,11 +942,14 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(
+                                    &peer.lock().tunnel.peer_static_public().to_bytes(),
+                                    packet,
+                                ) {
                                     continue;
                                 }
                             }
-                            if peer.is_allowed_ip(addr) {
+                            if p.is_allowed_ip(addr) {
                                 iface.write6(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v6",
@@ -950,7 +965,7 @@ impl Device {
                     if flush {
                         // Flush pending queue
                         while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                            p.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.write(packet) {
                                 tracing::warn!(message="Failed to flush queue", error = ?err);
@@ -1012,7 +1027,7 @@ impl Device {
                     };
 
                     let peer = match peers.find(dst_addr) {
-                        Some(peer) => peer,
+                        Some(peer) => peer.lock(),
                         None => continue,
                     };
 

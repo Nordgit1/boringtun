@@ -177,7 +177,7 @@ impl TunnInner {
         }
     }
 
-    pub(super) fn update_timers<'a>(&mut self, dst: &'a mut [u8]) -> TunnResult<'a> {
+    pub fn update_timers<'a>(&mut self, dst: &'a mut [u8]) -> TunnResult<'a> {
         let mut handshake_initiation_required = false;
         let mut keepalive_required = false;
 
@@ -347,7 +347,7 @@ impl TunnInner {
         }
     }
 
-    pub(super) fn persistent_keepalive(&self) -> Option<u16> {
+    pub fn persistent_keepalive(&self) -> Option<u16> {
         let keepalive = self.timers.persistent_keepalive;
 
         if keepalive > 0 {

@@ -11,13 +11,14 @@ mod integration_tests;
 mod session;
 mod timers;
 
+use parking_lot::RwLock;
+
 use crate::noise::errors::WireGuardError;
 use crate::noise::handshake::Handshake;
 use crate::noise::rate_limiter::RateLimiter;
 use crate::noise::session::message_data_len;
 use crate::noise::timers::{TimerName, Timers};
 
-use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::convert::{TryFrom, TryInto};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -65,7 +66,7 @@ pub struct Tunn {
 }
 
 /// Tunnel represents a point-to-point WireGuard connection
-struct TunnInner {
+pub struct TunnInner {
     /// The handshake currently in progress
     handshake: handshake::Handshake,
     /// The N_SESSIONS most recent sessions, index is session id modulo N_SESSIONS
@@ -276,7 +277,7 @@ impl Tunn {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.inner.read().handshake.is_expired()
+        self.inner.write().handshake.is_expired()
     }
 
     pub fn dst_address(packet: &[u8]) -> Option<IpAddr> {
@@ -305,7 +306,8 @@ impl Tunn {
 }
 
 impl TunnInner {
-    fn new(
+    /// Create a new tunnel using own private key and the peer public key
+    pub fn new(
         static_private: x25519_dalek::StaticSecret,
         peer_static_public: x25519_dalek::PublicKey,
         preshared_key: Option<[u8; 32]>,
@@ -343,7 +345,7 @@ impl TunnInner {
     }
 
     /// Update the private key and clear existing sessions
-    fn set_static_private(
+    pub fn set_static_private(
         &mut self,
         static_private: x25519_dalek::StaticSecret,
         static_public: x25519_dalek::PublicKey,
@@ -361,7 +363,13 @@ impl TunnInner {
         Ok(())
     }
 
-    fn encapsulate<'a>(&mut self, src: &[u8], dst: &'a mut [u8]) -> TunnResult<'a> {
+    /// Encapsulate a single packet from the tunnel interface.
+    /// Returns TunnResult.
+    ///
+    /// # Panics
+    /// Panics if dst buffer is too small.
+    /// Size of dst should be at least src.len() + 32, and no less than 148 bytes.
+    pub fn encapsulate<'a>(&mut self, src: &[u8], dst: &'a mut [u8]) -> TunnResult<'a> {
         let current = self.current;
         if let Some(ref session) = self.sessions[current % N_SESSIONS] {
             // Send the packet using an established session
@@ -386,7 +394,13 @@ impl TunnInner {
         self.format_handshake_initiation(dst, false)
     }
 
-    fn decapsulate<'a>(
+    /// Receives a UDP datagram from the network and parses it.
+    /// Returns TunnResult.
+    ///
+    /// If the result is of type TunnResult::WriteToNetwork, should repeat the call with empty datagram,
+    /// until TunnResult::Done is returned. If batch processing packets, it is OK to defer until last
+    /// packet is processed.
+    pub fn decapsulate<'a>(
         &mut self,
         src_addr: Option<IpAddr>,
         datagram: &[u8],
@@ -558,7 +572,9 @@ impl TunnInner {
         Ok(self.validate_decapsulated_packet(decapsulated_packet))
     }
 
-    fn format_handshake_initiation<'a>(
+    /// Formats a new handshake initiation message and store it in dst. If force_resend is true will send
+    /// a new handshake, even if a handshake is already in progress (for example when a handshake times out)
+    pub fn format_handshake_initiation<'a>(
         &mut self,
         dst: &'a mut [u8],
         force_resend: bool,
@@ -707,7 +723,7 @@ impl TunnInner {
     /// * Time since last handshake in seconds
     /// * Data bytes sent
     /// * Data bytes received
-    fn stats(&self) -> (Option<Duration>, usize, usize, f32, Option<u32>) {
+    pub fn stats(&self) -> (Option<Duration>, usize, usize, f32, Option<u32>) {
         let time = self.time_since_last_handshake();
         let tx_bytes = self.tx_bytes;
         let rx_bytes = self.rx_bytes;

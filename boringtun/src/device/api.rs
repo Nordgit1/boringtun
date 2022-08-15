@@ -176,6 +176,7 @@ fn api_get<W: Write>(writer: &mut BufWriter<W>, d: &Device) -> i32 {
     }
 
     for (k, p) in d.peers.iter() {
+        let p = p.lock();
         writeln!(writer, "public_key={}", encode_hex(k.as_bytes()));
 
         if let Some(ref key) = p.preshared_key() {
