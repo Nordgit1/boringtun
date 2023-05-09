@@ -109,8 +109,45 @@ pub trait MakeExternalBoringtun: Send + Sync {
     fn make_external(&self, socket: RawFd);
 }
 
+// The trait satisfied by tunnel device implementations.
+pub trait Tun: 'static + AsRawFd + Sized + Send + Sync {
+    fn new(name: &str) -> Result<Self, Error>;
+    #[cfg(not(target_os = "windows"))]
+    fn new_from_fd(fd: RawFd) -> Result<Self, Error>;
+    fn from_tun_fd(fd: RawFd) -> Result<TunSocket, Error>;
+    fn set_non_blocking(self) -> Result<Self, Error>;
+
+    fn name(&self) -> Result<String, Error>;
+    fn mtu(&self) -> Result<usize, Error>;
+
+    fn write4(&self, src: &[u8]) -> usize;
+    fn write6(&self, src: &[u8]) -> usize;
+    fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error>;
+}
+
+// The trait satisfied by UDP socket implementations.
+pub trait Sock: 'static + AsRawFd + Sized + Send + Sync {
+    fn new(protect: Arc<dyn MakeExternalBoringtun>) -> Result<Self, Error>;
+    fn new6(protect: Arc<dyn MakeExternalBoringtun>) -> Result<Self, Error>;
+
+    fn bind(self, port: u16) -> Result<Self, Error>;
+    fn connect(self, dst: &SocketAddr) -> Result<Self, Error>;
+
+    fn set_non_blocking(self) -> Result<Self, Error>;
+    fn set_reuse(self) -> Result<Self, Error>;
+    fn set_fwmark(&self, mark: u32) -> Result<(), Error>;
+
+    fn port(&self) -> Result<u16, Error>;
+    fn sendto(&self, buf: &[u8], dst: SocketAddr) -> usize;
+    fn recvfrom<'a>(&self, buf: &'a mut [u8]) -> Result<(SocketAddr, &'a mut [u8]), Error>;
+    fn write(&self, buf: &[u8]) -> usize;
+    fn read<'a>(&self, buf: &'a mut [u8]) -> Result<&'a mut [u8], Error>;
+
+    fn shutdown(&self);
+}
+
 pub struct DeviceHandle {
-    device: Arc<Lock<Device>>, // The interface this handle owns
+    pub device: Arc<Lock<Device>>, // The interface this handle owns
     threads: Vec<JoinHandle<()>>,
 }
 
