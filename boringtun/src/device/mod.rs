@@ -269,8 +269,8 @@ impl DeviceHandle {
                     unsafe {
                         device.queue.clear_event_by_fd(device.iface.as_raw_fd());
                     }
-                    device.register_iface_handler(Arc::new(new_iface.set_non_blocking()?))?;
-                    Ok::<(), Error>(())
+                    device.iface = Arc::new(new_iface.set_non_blocking()?);
+                    device.register_iface_handler(device.iface.clone())
                 },
             )
             // TODO: Not sure about casting none to error here
