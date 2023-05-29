@@ -93,6 +93,8 @@ pub enum Error {
     DropPrivileges(String),
     #[error("Api socket error")]
     ApiSocket(#[from] std::io::Error),
+    #[error("Set tunnel error {0}")]
+    SetTunnel(String),
 }
 
 // What the event loop should do after a handler returns
@@ -174,6 +176,7 @@ pub struct Device {
 
     listen_port: u16,
     fwmark: Option<u32>,
+    #[cfg(not(target_os = "linux"))]
     update_seq: u32,
 
     iface: Arc<TunSocket>,
@@ -204,6 +207,7 @@ struct ThreadData {
     iface: Arc<TunSocket>,
     src_buf: [u8; MAX_UDP_SIZE],
     dst_buf: [u8; MAX_UDP_SIZE],
+    #[cfg(not(target_os = "linux"))]
     update_seq: u32,
 }
 
@@ -258,6 +262,7 @@ impl DeviceHandle {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     pub fn set_iface(&mut self, new_iface: TunSocket) -> Result<(), Error> {
         // Even though device struct is not being written to, we still take a write lock on device to stop the event loop
         // The event loop must be stopped so that the old iface event handler can be safelly cleared.
@@ -268,13 +273,16 @@ impl DeviceHandle {
                 |device| device.trigger_yield(),
                 |device| {
                     (device.update_seq, _) = device.update_seq.overflowing_add(1);
+                    unsafe {
+                        device.queue.clear_event_by_fd(device.iface.as_raw_fd());
+                    }
                     device.iface = Arc::new(new_iface.set_non_blocking()?);
                     device.register_iface_handler(device.iface.clone())?;
                     device.cancel_yield();
 
                     Ok(())
                 }
-            ).ok_or(Error::IOCtl("Failed to get device lock when setting tunnel".to_string()))?
+            ).ok_or(Error::SetTunnel("Failed to get device lock when setting tunnel".to_string()))?
     }
 
     fn event_loop(thread_id: usize, device: &Lock<Device>) {
@@ -286,9 +294,10 @@ impl DeviceHandle {
 
         loop {
             let mut device_lock = device.read();
+            #[cfg(not(target_os = "linux"))]
             if device_lock.update_seq != thread_local.update_seq {
-                DeviceHandle::clean_thread_local(&thread_local, thread_id, &mut device_lock);
-                thread_local = DeviceHandle::new_thread_local(thread_id, &device_lock)
+                thread_local.update_seq = device_lock.update_seq;
+                thread_local.iface = device_lock.iface.clone();
             }
             // The event loop keeps a read lock on the device, because we assume write access is rarely needed
             let queue = Arc::clone(&device_lock.queue);
@@ -319,21 +328,6 @@ impl DeviceHandle {
         }
     }
 
-    fn clean_thread_local(old: &ThreadData, thread_id: usize, device_lock: &mut LockReadGuard<Device>) {
-        if thread_id == 0 || !device_lock.config.use_multi_queue {
-            device_lock
-                .try_writeable(
-                    |device| device.trigger_yield(),
-                    |device| {
-                        unsafe {
-                            device.queue.clear_event_by_fd(old.iface.as_raw_fd());
-                        }
-                        device.cancel_yield();
-                    }
-            ).ok_or(Error::IOCtl("Failed to get device lock when setting tunnel".to_string())).unwrap(); // TODO unwrap
-        }
-    }
-
     fn new_thread_local(thread_id: usize, device_lock: &LockReadGuard<Device>) -> ThreadData {
         #[cfg(target_os = "linux")]
         let t_local = ThreadData {
@@ -357,7 +351,6 @@ impl DeviceHandle {
 
                 iface_local
             },
-            update_seq: device_lock.update_seq,
         };
 
         #[cfg(not(target_os = "linux"))]
@@ -534,6 +527,7 @@ impl Device {
             rate_limiter: None,
             #[cfg(target_os = "linux")]
             uapi_fd,
+            #[cfg(not(target_os = "linux"))]
             update_seq: 0,
         };
 
