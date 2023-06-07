@@ -328,7 +328,10 @@ impl DeviceHandle {
         }
     }
 
-    fn new_thread_local(thread_id: usize, device_lock: &LockReadGuard<Device>) -> ThreadData {
+    fn new_thread_local(
+        thread_id: usize,
+        device_lock: &LockReadGuard<Device>,
+    ) -> ThreadData {
         #[cfg(target_os = "linux")]
         let t_local = ThreadData {
             src_buf: [0u8; MAX_UDP_SIZE],
