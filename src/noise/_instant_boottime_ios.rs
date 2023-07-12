@@ -1,4 +1,4 @@
-#![cfg(target_os = "ios")]
+#![cfg(any(target_os = "ios", target_os = "tvos"))]
 #![allow(non_camel_case_types)]
 
 // This is a partial copy of std::time::Instant (ios)
