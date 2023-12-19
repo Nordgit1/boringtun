@@ -27,7 +27,7 @@ const REKEY_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 const COOKIE_EXPIRATION_TIME: Duration = Duration::from_secs(120);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TimerName {
     /// Current time, updated each call to `update_timers`
     TimeCurrent,
@@ -131,11 +131,19 @@ impl TunnInner {
             _ => {}
         }
 
-        if time.is_zero() {
-            self.timers[timer_name] = Duration::from_millis(1);
+        let value = if time.is_zero() {
+            Duration::from_millis(1)
         } else {
-            self.timers[timer_name] = time;
+            time
+        };
+        if value < self.timers[timer_name] {
+            eprintln!(
+                "tick {timer_name:?} value: {value:?} < {:?}",
+                self.timers[timer_name]
+            );
+            panic!();
         }
+        self.timers[timer_name] = value;
     }
 
     pub(super) fn timer_tick_session_established(
@@ -190,6 +198,10 @@ impl TunnInner {
         // All the times are counted from tunnel initiation, for efficiency our timers are rounded
         // to a second, as there is no real benefit to having highly accurate timers.
         let now = time.duration_since(self.timers.time_started);
+        if now < self.timers[TimeCurrent] {
+            eprintln!("update now: {now:?} < {:?}", self.timers[TimeCurrent]);
+            panic!();
+        }
         self.timers[TimeCurrent] = now;
 
         self.update_session_timers(now);
