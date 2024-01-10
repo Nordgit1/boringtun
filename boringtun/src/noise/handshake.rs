@@ -643,6 +643,7 @@ impl Handshake {
         &mut self,
         packet: PacketCookieReply,
     ) -> Result<(), WireGuardError> {
+        println!("Received cookie reply");
         let mac1 = match self.cookies.last_mac1 {
             Some(mac) => mac,
             None => {
