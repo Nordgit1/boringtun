@@ -508,7 +508,9 @@ impl TunnInner {
             local_idx = p.receiver_idx
         );
 
-        self.handshake.receive_cookie_reply(p)?;
+        let recres = self.handshake.receive_cookie_reply(p);
+        println!("handle_cookie_reply - recres - {:?}", recres);
+        recres?;
         self.timer_tick(TimerName::TimeLastPacketReceived);
         self.timer_tick(TimerName::TimeCookieReceived);
 
