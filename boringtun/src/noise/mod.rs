@@ -532,6 +532,7 @@ impl TunnInner {
         packet: PacketData,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_data");
         let r_idx = packet.receiver_idx as usize;
         let idx = r_idx % N_SESSIONS;
 

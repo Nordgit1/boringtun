@@ -765,8 +765,8 @@ impl Device {
                                 udp.sendto(cookie, addr);
                                 continue;
                             }
-                            Err(_) => {
-                                println!("register_udp_handler - misc error");
+                            Err(e) => {
+                                println!("register_udp_handler - misc error {:?}", e);
                                 continue;
                             }
                         };
