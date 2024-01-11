@@ -210,12 +210,19 @@ impl Tunn {
     #[inline(always)]
     pub fn parse_incoming_packet(src: &[u8]) -> Result<Packet, WireGuardError> {
         if src.len() < 4 {
+            println!("parse_incoming_packet - packet too short {:?}", src);
             return Err(WireGuardError::InvalidPacket);
         }
 
         // Checks the type, as well as the reserved zero fields
         let packet_type = u32::from_le_bytes(src[0..4].try_into().unwrap());
 
+        println!(
+            "parse_incoming_packet - match ({}, {}) (cookie size: {})",
+            packet_type,
+            src.len(),
+            COOKIE_REPLY_SZ
+        );
         Ok(match (packet_type, src.len()) {
             (HANDSHAKE_INIT, HANDSHAKE_INIT_SZ) => Packet::HandshakeInit(HandshakeInit {
                 sender_idx: u32::from_le_bytes(src[4..8].try_into().unwrap()),
