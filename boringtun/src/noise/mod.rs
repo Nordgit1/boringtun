@@ -258,6 +258,7 @@ impl Tunn {
     }
 
     pub fn handle_verified_packet<'a>(&self, packet: Packet, dst: &'a mut [u8]) -> TunnResult<'a> {
+        println!("handle_verified_packet");
         self.inner.write().handle_verified_packet(packet, dst)
     }
 
@@ -390,6 +391,7 @@ impl TunnInner {
         datagram: &[u8],
         dst: &'a mut [u8],
     ) -> TunnResult<'a> {
+        println!("decapsulate");
         if datagram.is_empty() {
             // Indicates a repeated call
             return self.send_queued_packet(dst);
@@ -400,12 +402,19 @@ impl TunnInner {
             .rate_limiter
             .verify_packet(src_addr, datagram, &mut cookie)
         {
-            Ok(packet) => packet,
+            Ok(packet) => {
+                println!("decapsulate - Packet ok");
+                packet
+            }
             Err(TunnResult::WriteToNetwork(cookie)) => {
+                println!("decapsulate - WriteToNetworkError");
                 dst[..cookie.len()].copy_from_slice(cookie);
                 return TunnResult::WriteToNetwork(&mut dst[..cookie.len()]);
             }
-            Err(TunnResult::Err(e)) => return TunnResult::Err(e),
+            Err(TunnResult::Err(e)) => {
+                println!("decapsulate - TunnResultError");
+                return TunnResult::Err(e);
+            }
             _ => unreachable!(),
         };
 
@@ -417,6 +426,7 @@ impl TunnInner {
         packet: Packet,
         dst: &'a mut [u8],
     ) -> TunnResult<'a> {
+        println!("handle_verified_packet");
         match packet {
             Packet::HandshakeInit(p) => self.handle_handshake_init(p, dst),
             Packet::HandshakeResponse(p) => self.handle_handshake_response(p, dst),
@@ -431,6 +441,7 @@ impl TunnInner {
         p: HandshakeInit,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_handshake_init");
         tracing::debug!(
             message = "Received handshake_initiation",
             remote_idx = p.sender_idx
@@ -456,6 +467,7 @@ impl TunnInner {
         p: HandshakeResponse,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_handshake_response");
         tracing::debug!(
             message = "Received handshake_response",
             local_idx = p.receiver_idx,
@@ -483,6 +495,7 @@ impl TunnInner {
         &mut self,
         p: PacketCookieReply,
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_cookie_reply");
         tracing::debug!(
             message = "Received cookie_reply",
             local_idx = p.receiver_idx
