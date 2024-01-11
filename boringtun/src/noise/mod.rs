@@ -210,12 +210,19 @@ impl Tunn {
     #[inline(always)]
     pub fn parse_incoming_packet(src: &[u8]) -> Result<Packet, WireGuardError> {
         if src.len() < 4 {
+            println!("parse_incoming_packet - packet too short {:?}", src);
             return Err(WireGuardError::InvalidPacket);
         }
 
         // Checks the type, as well as the reserved zero fields
         let packet_type = u32::from_le_bytes(src[0..4].try_into().unwrap());
 
+        println!(
+            "parse_incoming_packet - match ({}, {}) (cookie size: {})",
+            packet_type,
+            src.len(),
+            COOKIE_REPLY_SZ
+        );
         Ok(match (packet_type, src.len()) {
             (HANDSHAKE_INIT, HANDSHAKE_INIT_SZ) => Packet::HandshakeInit(HandshakeInit {
                 sender_idx: u32::from_le_bytes(src[4..8].try_into().unwrap()),
@@ -258,6 +265,7 @@ impl Tunn {
     }
 
     pub fn handle_verified_packet<'a>(&self, packet: Packet, dst: &'a mut [u8]) -> TunnResult<'a> {
+        println!("handle_verified_packet");
         self.inner.write().handle_verified_packet(packet, dst)
     }
 
@@ -390,6 +398,7 @@ impl TunnInner {
         datagram: &[u8],
         dst: &'a mut [u8],
     ) -> TunnResult<'a> {
+        println!("decapsulate");
         if datagram.is_empty() {
             // Indicates a repeated call
             return self.send_queued_packet(dst);
@@ -400,12 +409,19 @@ impl TunnInner {
             .rate_limiter
             .verify_packet(src_addr, datagram, &mut cookie)
         {
-            Ok(packet) => packet,
+            Ok(packet) => {
+                println!("decapsulate - Packet ok");
+                packet
+            }
             Err(TunnResult::WriteToNetwork(cookie)) => {
+                println!("decapsulate - WriteToNetworkError");
                 dst[..cookie.len()].copy_from_slice(cookie);
                 return TunnResult::WriteToNetwork(&mut dst[..cookie.len()]);
             }
-            Err(TunnResult::Err(e)) => return TunnResult::Err(e),
+            Err(TunnResult::Err(e)) => {
+                println!("decapsulate - TunnResultError");
+                return TunnResult::Err(e);
+            }
             _ => unreachable!(),
         };
 
@@ -417,6 +433,7 @@ impl TunnInner {
         packet: Packet,
         dst: &'a mut [u8],
     ) -> TunnResult<'a> {
+        println!("handle_verified_packet");
         match packet {
             Packet::HandshakeInit(p) => self.handle_handshake_init(p, dst),
             Packet::HandshakeResponse(p) => self.handle_handshake_response(p, dst),
@@ -431,6 +448,7 @@ impl TunnInner {
         p: HandshakeInit,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_handshake_init");
         tracing::debug!(
             message = "Received handshake_initiation",
             remote_idx = p.sender_idx
@@ -456,6 +474,7 @@ impl TunnInner {
         p: HandshakeResponse,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_handshake_response");
         tracing::debug!(
             message = "Received handshake_response",
             local_idx = p.receiver_idx,
@@ -483,14 +502,13 @@ impl TunnInner {
         &mut self,
         p: PacketCookieReply,
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_cookie_reply");
         tracing::debug!(
             message = "Received cookie_reply",
             local_idx = p.receiver_idx
         );
 
-        let recres = self.handshake.receive_cookie_reply(p);
-        println!("handle_cookie_reply - recres - {:?}", recres);
-        recres?;
+        self.handshake.receive_cookie_reply(p)?;
         self.timer_tick(TimerName::TimeLastPacketReceived);
         self.timer_tick(TimerName::TimeCookieReceived);
 
@@ -521,6 +539,7 @@ impl TunnInner {
         packet: PacketData,
         dst: &'a mut [u8],
     ) -> Result<TunnResult<'a>, WireGuardError> {
+        println!("handle_data");
         let r_idx = packet.receiver_idx as usize;
         let idx = r_idx % N_SESSIONS;
 

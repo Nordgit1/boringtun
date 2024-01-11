@@ -152,7 +152,9 @@ impl RateLimiter {
         src: &'a [u8],
         dst: &'b mut [u8],
     ) -> Result<Packet<'a>, TunnResult<'b>> {
-        let packet = Tunn::parse_incoming_packet(src)?;
+        let packet = Tunn::parse_incoming_packet(src);
+        println!("verify_packet - parse_incoming_packet: {:?}", packet);
+        let packet = packet?;
 
         // Verify and rate limit handshake messages only
         if let Packet::HandshakeInit(HandshakeInit { sender_idx, .. })
