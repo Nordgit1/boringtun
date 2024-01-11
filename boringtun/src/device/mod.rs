@@ -741,7 +741,6 @@ impl Device {
     }
 
     fn register_udp_handler(&self, udp: Arc<UDPSocket>) -> Result<(), Error> {
-        println!("register_udp_handler");
         self.queue.new_event(
             udp.as_raw_fd(),
             Box::new(move |d, t| {
@@ -756,19 +755,12 @@ impl Device {
                     // The rate limiter initially checks mac1 and mac2, and optionally asks to send a cookie
                     let parsed_packet =
                         match rate_limiter.verify_packet(Some(addr.ip()), packet, &mut t.dst_buf) {
-                            Ok(packet) => {
-                                println!("register_udp_handler - Packet ok");
-                                packet
-                            }
+                            Ok(packet) => packet,
                             Err(TunnResult::WriteToNetwork(cookie)) => {
-                                println!("register_udp_handler - WriteToNetworkError");
                                 udp.sendto(cookie, addr);
                                 continue;
                             }
-                            Err(e) => {
-                                println!("register_udp_handler - misc error {:?}", e);
-                                continue;
-                            }
+                            Err(_) => continue,
                         };
 
                     let peer = match &parsed_packet {
