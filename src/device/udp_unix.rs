@@ -1,13 +1,15 @@
 // Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 
-use super::{errno, errno_str, Error};
+use super::{errno_str, Error};
 use libc::*;
+use std::io;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
-
-use crate::device::{MakeExternalBoringtun, Sock};
+use std::net::Ipv4Addr;
+use crate::device::MakeExternalBoringtun;
+use socket2::Socket;
 
 /// Receives and sends UDP packets over the network
 #[derive(Debug)]
@@ -34,9 +36,35 @@ impl UDPSocket {
                 std::mem::size_of::<sockaddr_in>() as socklen_t,
             )
         } {
-            -1 => Err(Error::Bind(errno_str())),
-            _ => Ok(self),
-        }
+            -1 => return Err(Error::Bind(errno_str())),
+            _ => (),
+        };
+
+        // let mreq = sys::IpMreq {
+        //     imr_multiaddr: sys::to_in_addr(multiaddr),
+        //     imr_interface: sys::to_in_addr(interface),
+        // };
+        // unsafe { setsockopt(self.as_raw(), sys::IPPROTO_IP, sys::IP_ADD_MEMBERSHIP, mreq) }
+
+        let mut group = ip_mreq {
+            imr_multiaddr: in_addr {
+                s_addr: u32::from_ne_bytes(std::net::Ipv4Addr::new(224, 0, 0, 251).octets()),
+            },
+            imr_interface: in_addr {
+                s_addr: u32::from_ne_bytes(std::net::Ipv4Addr::new(0,0,0,0).octets()),
+            }
+        };
+        unsafe {
+            let res = libc::setsockopt(
+                self.fd,
+                libc::IPPROTO_IP,
+                libc::IP_ADD_MEMBERSHIP,
+                &group as *const ip_mreq as *const libc::c_void,
+                std::mem::size_of_val(&group) as u32,
+            );
+            println!("setsockopt res: {res}, errno: {}", std::io::Error::last_os_error());
+        };
+        Ok(self)
     }
 
     fn bind6(self, port: u16) -> Result<UDPSocket, Error> {
@@ -59,7 +87,7 @@ impl UDPSocket {
     fn connect4(self, dst: &SocketAddrV4) -> Result<UDPSocket, Error> {
         assert_eq!(self.version, 4);
         let addr = sockaddr_in {
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
             sin_len: std::mem::size_of::<sockaddr_in>() as u8,
             sin_family: AF_INET as _,
             sin_port: dst.port().to_be(),
@@ -100,10 +128,10 @@ impl UDPSocket {
         }
     }
 
-    fn sendto4(&self, buf: &[u8], dst: SocketAddrV4) -> usize {
+    fn sendto4(&self, buf: &[u8], dst: SocketAddrV4) -> io::Result<usize> {
         assert_eq!(self.version, 4);
         let addr = sockaddr_in {
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
             sin_len: std::mem::size_of::<sockaddr_in>() as _,
             sin_family: AF_INET as _,
             sin_port: dst.port().to_be(),
@@ -123,12 +151,12 @@ impl UDPSocket {
                 std::mem::size_of::<sockaddr_in>() as _,
             )
         } {
-            -1 => 0,
-            n => n as usize,
+            -1 => Err(io::Error::last_os_error()),
+            n => Ok(n as usize),
         }
     }
 
-    fn sendto6(&self, buf: &[u8], dst: SocketAddrV6) -> usize {
+    fn sendto6(&self, buf: &[u8], dst: SocketAddrV6) -> io::Result<usize> {
         assert_eq!(self.version, 6);
         let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
         addr.sin6_family = AF_INET6 as _;
@@ -145,12 +173,12 @@ impl UDPSocket {
                 std::mem::size_of::<sockaddr_in6>() as _,
             )
         } {
-            -1 => 0,
-            n => n as usize,
+            -1 => Err(io::Error::last_os_error()),
+            n => Ok(n as usize),
         }
     }
 
-    fn recvfrom6<'a>(&self, buf: &'a mut [u8]) -> Result<(SocketAddr, &'a mut [u8]), Error> {
+    fn recvfrom6<'a>(&self, buf: &'a mut [u8]) -> io::Result<(SocketAddr, &'a mut [u8])> {
         let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
         let mut addr_len: socklen_t = std::mem::size_of::<sockaddr_in6>() as socklen_t;
 
@@ -166,7 +194,7 @@ impl UDPSocket {
         };
 
         if n == -1 {
-            return Err(Error::UDPRead(errno()));
+            return Err(io::Error::last_os_error());
         }
 
         // This is the endpoint
@@ -180,9 +208,9 @@ impl UDPSocket {
         Ok((SocketAddr::V6(origin), &mut buf[..n as usize]))
     }
 
-    fn recvfrom4<'a>(&self, buf: &'a mut [u8]) -> Result<(SocketAddr, &'a mut [u8]), Error> {
+    fn recvfrom4<'a>(&self, buf: &'a mut [u8]) -> io::Result<(SocketAddr, &'a mut [u8])> {
         let mut addr = sockaddr_in {
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
             sin_len: 0,
             sin_family: 0,
             sin_port: 0,
@@ -203,7 +231,7 @@ impl UDPSocket {
         };
 
         if n == -1 {
-            return Err(Error::UDPRead(errno()));
+            return Err(io::Error::last_os_error());
         }
 
         // This is the endpoint
@@ -215,10 +243,10 @@ impl UDPSocket {
         Ok((SocketAddr::V4(origin), &mut buf[..n as usize]))
     }
 
-    fn write_fd(fd: RawFd, src: &[u8]) -> usize {
+    fn write_fd(fd: RawFd, src: &[u8]) -> io::Result<usize> {
         match unsafe { send(fd, &src[0] as *const u8 as _, src.len(), 0) } {
-            -1 => 0,
-            n => n as usize,
+            -1 => Err(io::Error::last_os_error()),
+            n => Ok(n as usize),
         }
     }
 }
@@ -236,9 +264,9 @@ impl AsRawFd for UDPSocket {
     }
 }
 
-impl Sock for UDPSocket {
+impl UDPSocket {
     /// Create a new IPv4 UDP socket
-    fn new(protect: Arc<dyn MakeExternalBoringtun>) -> Result<UDPSocket, Error> {
+    pub fn new(protect: Arc<dyn MakeExternalBoringtun>) -> Result<UDPSocket, Error> {
         let socket = match unsafe { socket(AF_INET, SOCK_DGRAM, 0) } {
             -1 => return Err(Error::Socket(errno_str())),
             fd => UDPSocket { fd, version: 4 },
@@ -250,7 +278,7 @@ impl Sock for UDPSocket {
     }
 
     /// Create a new IPv6 UDP socket
-    fn new6(protect: Arc<dyn MakeExternalBoringtun>) -> Result<UDPSocket, Error> {
+    pub fn new6(protect: Arc<dyn MakeExternalBoringtun>) -> Result<UDPSocket, Error> {
         let socket = match unsafe { socket(AF_INET6, SOCK_DGRAM, 0) } {
             -1 => return Err(Error::Socket(errno_str())),
             fd => UDPSocket { fd, version: 6 },
@@ -262,7 +290,7 @@ impl Sock for UDPSocket {
     }
 
     /// Bind the socket to a local port
-    fn bind(self, port: u16) -> Result<UDPSocket, Error> {
+    pub fn bind(self, port: u16) -> Result<UDPSocket, Error> {
         if self.version == 6 {
             return self.bind6(port);
         }
@@ -273,7 +301,7 @@ impl Sock for UDPSocket {
     /// Connect a socket to a remote address, must call bind prior to connect
     /// # Panics
     /// When connecting an IPv4 socket to an IPv6 address and vice versa
-    fn connect(self, dst: &SocketAddr) -> Result<UDPSocket, Error> {
+    pub fn connect(self, dst: &SocketAddr) -> Result<UDPSocket, Error> {
         match dst {
             SocketAddr::V4(dst) => self.connect4(dst),
             SocketAddr::V6(dst) => self.connect6(dst),
@@ -281,7 +309,7 @@ impl Sock for UDPSocket {
     }
 
     /// Set socket mode to non blocking
-    fn set_non_blocking(self) -> Result<UDPSocket, Error> {
+    pub fn set_non_blocking(self) -> Result<UDPSocket, Error> {
         match unsafe { fcntl(self.fd, F_GETFL) } {
             -1 => Err(Error::FCntl(errno_str())),
             flags => match unsafe { fcntl(self.fd, F_SETFL, flags | O_NONBLOCK) } {
@@ -292,7 +320,7 @@ impl Sock for UDPSocket {
     }
 
     /// Set the SO_REUSEPORT/SO_REUSEADDR option, so multiple sockets can bind on the same port
-    fn set_reuse(self) -> Result<UDPSocket, Error> {
+    pub fn set_reuse(self) -> Result<UDPSocket, Error> {
         match unsafe {
             setsockopt(
                 self.fd,
@@ -313,7 +341,7 @@ impl Sock for UDPSocket {
     #[cfg(target_os = "linux")]
     /// Set the mark on all packets sent by this socket using SO_MARK
     /// Only available on Linux
-    fn set_fwmark(&self, mark: u32) -> Result<(), Error> {
+    pub fn set_fwmark(&self, mark: u32) -> Result<(), Error> {
         match unsafe {
             setsockopt(
                 self.fd,
@@ -328,15 +356,20 @@ impl Sock for UDPSocket {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
-    fn set_fwmark(&self, _: u32) -> Result<(), Error> {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "android"
+    ))]
+    pub fn set_fwmark(&self, _: u32) -> Result<(), Error> {
         Ok(())
     }
 
     /// Query the local port the socket is bound to
     /// # Panics
     /// If socket is IPv6
-    fn port(&self) -> Result<u16, Error> {
+    pub fn port(&self) -> Result<u16, Error> {
         if self.version != 4 {
             panic!("Can only query ports of IPv4 sockets");
         }
@@ -351,7 +384,7 @@ impl Sock for UDPSocket {
     /// Send buf to a remote address, returns 0 on error, or amount of data send on success
     /// # Panics
     /// When sending from an IPv4 socket to an IPv6 address and vice versa
-    fn sendto(&self, buf: &[u8], dst: SocketAddr) -> usize {
+    pub fn sendto(&self, buf: &[u8], dst: SocketAddr) -> io::Result<usize> {
         match dst {
             SocketAddr::V4(addr) => self.sendto4(buf, addr),
             SocketAddr::V6(addr) => self.sendto6(buf, addr),
@@ -359,7 +392,7 @@ impl Sock for UDPSocket {
     }
 
     /// Receives a message on a non-connected UDP socket and returns its contents and origin address
-    fn recvfrom<'a>(&self, buf: &'a mut [u8]) -> Result<(SocketAddr, &'a mut [u8]), Error> {
+    pub fn recvfrom<'a>(&self, buf: &'a mut [u8]) -> io::Result<(SocketAddr, &'a mut [u8])> {
         match self.version {
             4 => self.recvfrom4(buf),
             _ => self.recvfrom6(buf),
@@ -367,20 +400,20 @@ impl Sock for UDPSocket {
     }
 
     /// Sends a message on a connected UDP socket. Returns number of bytes successfully sent.
-    fn write(&self, src: &[u8]) -> usize {
+    pub fn write(&self, src: &[u8]) -> io::Result<usize> {
         UDPSocket::write_fd(self.fd, src)
     }
 
     /// Receives a message on a connected UDP socket and returns its contents
-    fn read<'a>(&self, dst: &'a mut [u8]) -> Result<&'a mut [u8], Error> {
+    pub fn read<'a>(&self, dst: &'a mut [u8]) -> io::Result<&'a mut [u8]> {
         match unsafe { recv(self.fd, &mut dst[0] as *mut u8 as _, dst.len(), 0) } {
-            -1 => Err(Error::UDPRead(errno())),
+            -1 => Err(io::Error::last_os_error()),
             n => Ok(&mut dst[..n as usize]),
         }
     }
 
     /// Calls shutdown on a connected socket. This will trigger an EOF in the event queue.
-    fn shutdown(&self) {
+    pub fn shutdown(&self) {
         unsafe { shutdown(self.fd, SHUT_RDWR) };
     }
 }
