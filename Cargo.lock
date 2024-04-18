@@ -666,11 +666,10 @@ checksum = "717e29a243b81f8130e31e24e04fb151b04a44b5a7d05370935f7d937e9de06d"
 
 [[package]]
 name = "nix"
-version = "0.25.0"
+version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e322c04a9e3440c327fca7b6c8a63e6890a32fa2ad689db972425f07e0d22abb"
+checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
 dependencies = [
- "autocfg",
  "bitflags",
  "cfg-if",
  "libc",
@@ -1692,3 +1691,13 @@ dependencies = [
  "syn 1.0.98",
  "synstructure",
 ]
+
+[[patch.unused]]
+name = "block"
+version = "0.1.6"
+source = "git+https://github.com/nordsecurity/rust-block.git?branch=add_apple_tvos_support#159f9f5caefb1f7d4fd3ce0d0a3467e10b72bf55"
+
+[[patch.unused]]
+name = "objc"
+version = "0.2.7"
+source = "git+https://github.com/nordsecurity/rust-objc.git?branch=add_apple_tvos_support#39f573548138045f16e9fc732e57338f56421573"
