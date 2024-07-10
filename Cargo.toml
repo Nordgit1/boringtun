@@ -18,6 +18,7 @@ slog-term = { version = "2.7", optional = true }
 ip_network = "0.3.4"
 ip_network_table = "0.1.2"
 thiserror = "1.0"
+dispatch = "0.2.0"
 
 [dev-dependencies]
 slog-term = { version = "2.7" }

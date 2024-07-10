@@ -150,6 +150,7 @@ pub trait Sock: 'static + AsRawFd + Sized + Send + Sync {
 pub struct DeviceHandle<T: Tun = TunSocket, S: Sock = UDPSocket> {
     pub device: Arc<Lock<Device<T, S>>>, // The interface this handle owns
     threads: Vec<JoinHandle<()>>,
+    queue: dispatch::Queue,
 }
 
 pub struct DeviceConfig {
@@ -218,16 +219,15 @@ impl<T: Tun, S: Sock> DeviceHandle<T, S> {
 
         let mut threads = vec![];
 
-        for i in 0..n_threads {
-            threads.push({
-                let dev = Arc::clone(&interface_lock);
-                thread::spawn(move || DeviceHandle::event_loop(i, &dev))
-            });
-        }
+        let queue = dispatch::Queue::global(dispatch::QueuePriority::High);
+
+        let dev = Arc::clone(&interface_lock);
+        queue.exec_async(move || DeviceHandle::event_loop(0, &dev));
 
         Ok(DeviceHandle {
             device: interface_lock,
             threads,
+            queue,
         })
     }
 
