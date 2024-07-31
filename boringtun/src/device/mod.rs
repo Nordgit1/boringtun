@@ -830,17 +830,14 @@ impl Device {
                         Some(peer) => peer,
                     };
 
-                    let mut p = peer.lock();
-
                     let mut public_key = String::with_capacity(64);
-                    for byte in p.tunnel.peer_static_public().as_bytes() {
+                    for byte in peer.lock().tunnel.peer_static_public().as_bytes() {
                         public_key.push_str(&format!("{:02X}", byte));
                     }
                     // We found a peer, use it to decapsulate the message+
                     let mut flush = false; // Are there packets to send from the queue?
-                    match p
-                        .tunnel
-                        .handle_verified_packet(parsed_packet, &mut t.dst_buf[..])
+                    let action = peer.lock().tunnel.handle_verified_packet(parsed_packet, &mut t.dst_buf[..]);
+                    match action
                     {
                         TunnResult::Done => {}
                         TunnResult::Err(err) => {
@@ -855,11 +852,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&p.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if p.is_allowed_ip(addr) {
+                            if peer.lock().is_allowed_ip(addr) {
                                 t.iface.write4(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v4",
@@ -872,11 +869,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&p.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if p.is_allowed_ip(addr) {
+                            if peer.lock().is_allowed_ip(addr) {
                                 t.iface.write6(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v6",
@@ -892,7 +889,7 @@ impl Device {
                     if flush {
                         // Flush pending queue
                         while let TunnResult::WriteToNetwork(packet) =
-                            p.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                            peer.lock().tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.send_to(packet, &addr) {
                                 tracing::warn!(message = "Failed to flush queue", error = ?err, dst = ?addr);
@@ -903,9 +900,9 @@ impl Device {
                     // This packet was OK, that means we want to create a connected socket for this peer
                     let addr = addr.as_socket().unwrap();
                     let ip_addr = addr.ip();
-                    p.set_endpoint(addr);
+                    peer.lock().set_endpoint(addr);
                     if d.config.use_connected_socket {
-                        if let Ok(sock) = p.connect_endpoint(d.listen_port) {
+                        if let Ok(sock) = peer.lock().connect_endpoint(d.listen_port) {
                             d.register_conn_handler(Arc::clone(peer), sock, ip_addr)
                                 .unwrap();
                         }
@@ -950,12 +947,9 @@ impl Device {
 
                 while let Ok(read_bytes) = udp.recv(src_buf) {
                     let mut flush = false;
-                    let mut p = peer.lock();
-                    match p.tunnel.decapsulate(
-                        Some(peer_addr),
-                        &t.src_buf[..read_bytes],
-                        &mut t.dst_buf[..],
-                    ) {
+                    let decapsulate_result = peer.lock().tunnel.decapsulate(Some(peer_addr), &t.src_buf[..read_bytes], &mut t.dst_buf[..]);
+                    match decapsulate_result
+                    {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
                             tracing::error!(message="Decapsulate error",
@@ -970,11 +964,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&p.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if p.is_allowed_ip(addr) {
+                            if peer.lock().is_allowed_ip(addr) {
                                 t.iface.write4(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v4",
@@ -987,11 +981,11 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&p.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
-                            if p.is_allowed_ip(addr) {
+                            if peer.lock().is_allowed_ip(addr) {
                                 t.iface.write6(packet);
                                 tracing::trace!(
                                     message = "Writing packet to tunnel v6",
@@ -1007,7 +1001,7 @@ impl Device {
                     if flush {
                         // Flush pending queue
                         while let TunnResult::WriteToNetwork(packet) =
-                            p.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                            peer.lock().tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.send(packet) {
                                 tracing::warn!(message="Failed to flush queue", error = ?err);
@@ -1068,24 +1062,26 @@ impl Device {
                         None => continue,
                     };
 
-                    let mut peer = match peers.find(dst_addr) {
-                        Some(peer) => peer.lock(),
+                    let peer = match peers.find(dst_addr) {
+                        Some(peer) => peer,
                         None => continue,
                     };
 
                     if let Some(callback) = &d.config.firewall_process_outbound_callback {
-                        if !callback(&peer.tunnel.peer_static_public().to_bytes(), src) {
+                        if !callback(&peer.lock().tunnel.peer_static_public().to_bytes(), src) {
                             continue;
                         }
                     }
 
                     let mut public_key = String::with_capacity(32);
-                    for byte in peer.tunnel.peer_static_public().as_bytes() {
+                    for byte in peer.lock().tunnel.peer_static_public().as_bytes() {
                         let pub_symbol = format!("{:02X}", byte);
                         public_key.push_str(&pub_symbol);
                     }
 
-                    match peer.tunnel.encapsulate(src, &mut t.dst_buf[..]) {
+                    let endpoint_addr = peer.lock().endpoint().addr;
+                    let encapsulate_result = peer.lock().tunnel.encapsulate(src, &mut t.dst_buf[..]);
+                    match encapsulate_result {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
                             tracing::error!(message = "Encapsulate error",
@@ -1093,22 +1089,7 @@ impl Device {
                             public_key = public_key)
                         }
                         TunnResult::WriteToNetwork(packet) => {
-                            let mut endpoint = peer.endpoint_mut();
-                            if let Some(conn) = endpoint.conn.as_mut() {
-                                // Prefer to send using the connected socket
-                                if let Err(err) = conn.write(packet) {
-                                    tracing::debug!(message = "Failed to send packet with the connected socket", error = ?err);
-                                    drop(endpoint);
-                                    peer.shutdown_endpoint();
-                                } else {
-                                    tracing::trace!(
-                                        "Pkt -> ConnSock ({:?}), len: {}, dst_addr: {}",
-                                        endpoint.addr,
-                                        packet.len(),
-                                        dst_addr
-                                    );
-                                }
-                            } else if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
+                            if let Some(addr @ SocketAddr::V4(_)) = endpoint_addr {
                                 if let Err(err) = udp4.send_to(packet, &addr.into()) {
                                     tracing::warn!(message = "Failed to write packet to network v4", error = ?err, dst = ?addr);
                                 } else {
@@ -1120,7 +1101,7 @@ impl Device {
                                         public_key = public_key
                                     );
                                 }
-                            } else if let Some(addr @ SocketAddr::V6(_)) = endpoint.addr {
+                            } else if let Some(addr @ SocketAddr::V6(_)) = endpoint_addr {
                                 if let Err(err) = udp6.send_to(packet, &addr.into()) {
                                     tracing::warn!(message = "Failed to write packet to network v6", error = ?err, dst = ?addr);
                                 } else {
