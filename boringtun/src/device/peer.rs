@@ -24,7 +24,7 @@ pub struct Endpoint {
 
 pub struct Peer {
     /// The associated tunnel struct
-    pub(crate) tunnel: TunnLock,
+    pub(crate) tunnel: RwLock<Tunn>,
     /// The index the tunnel uses
     index: u32,
     endpoint: RwLock<Endpoint>,
@@ -67,7 +67,7 @@ impl Peer {
         protect: Arc<dyn MakeExternalBoringtun>,
     ) -> Peer {
         Peer {
-            tunnel: TunnLock::new(tunnel),
+            tunnel: RwLock::new(tunnel),
             index,
             endpoint: RwLock::new(Endpoint {
                 addr: endpoint,
@@ -80,7 +80,7 @@ impl Peer {
     }
 
     pub fn update_timers<'a>(&self, dst: &'a mut [u8]) -> TunnResult<'a> {
-        self.tunnel.update_timers(dst)
+        self.tunnel.write().update_timers(dst)
     }
 
     pub fn endpoint(&self) -> parking_lot::RwLockReadGuard<'_, Endpoint> {
@@ -172,19 +172,19 @@ impl Peer {
     }
 
     pub fn time_since_last_handshake(&self) -> Option<std::time::Duration> {
-        self.tunnel.time_since_last_handshake()
+        self.tunnel.read().time_since_last_handshake()
     }
 
     pub fn last_handshake_time(&self) -> Option<std::time::Duration> {
-        self.tunnel.last_handshake_time()
+        self.tunnel.read().last_handshake_time()
     }
 
     pub fn persistent_keepalive(&self) -> Option<u16> {
-        self.tunnel.persistent_keepalive()
+        self.tunnel.read().persistent_keepalive()
     }
 
     pub fn set_persistent_keepalive(&self, keepalive: u16) {
-        self.tunnel.set_persistent_keepalive(keepalive);
+        self.tunnel.write().set_persistent_keepalive(keepalive);
     }
 
     pub fn preshared_key(&self) -> Option<[u8; 32]> {

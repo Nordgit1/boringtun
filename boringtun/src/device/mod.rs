@@ -625,6 +625,7 @@ impl Device {
         for peer in self.peers.values_mut() {
             if peer
                 .tunnel
+                .write()
                 .set_static_private(
                     private_key.clone(),
                     public_key,
@@ -825,13 +826,14 @@ impl Device {
                     };
 
                     let mut public_key = String::with_capacity(64);
-                    for byte in peer.tunnel.peer_static_public().as_bytes() {
+                    for byte in peer.tunnel.read().peer_static_public().as_bytes() {
                         public_key.push_str(&format!("{:02X}", byte));
                     }
                     // We found a peer, use it to decapsulate the message+
                     let mut flush = false; // Are there packets to send from the queue?
                     match peer
                         .tunnel
+                        .write()
                         .handle_verified_packet(parsed_packet, &mut t.dst_buf[..])
                     {
                         TunnResult::Done => {}
@@ -847,7 +849,7 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.tunnel.read().peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
@@ -864,7 +866,7 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(&peer.tunnel.read().peer_static_public().to_bytes(), packet) {
                                     continue;
                                 }
                             }
@@ -884,7 +886,7 @@ impl Device {
                     if flush {
                         // Flush pending queue
                         while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                            peer.tunnel.write().decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.send_to(packet, &addr) {
                                 tracing::warn!(message = "Failed to flush queue", error = ?err, dst = ?addr);
@@ -930,7 +932,7 @@ impl Device {
                 let mut iter = MAX_ITR;
 
                 let mut public_key = String::with_capacity(32);
-                for byte in peer.tunnel.peer_static_public().as_bytes() {
+                for byte in peer.tunnel.read().peer_static_public().as_bytes() {
                     let pub_symbol = format!("{:02X}", byte);
                     public_key.push_str(&pub_symbol);
                 }
@@ -942,7 +944,7 @@ impl Device {
 
                 while let Ok(read_bytes) = udp.recv(src_buf) {
                     let mut flush = false;
-                    match peer.tunnel.decapsulate(
+                    match peer.tunnel.write().decapsulate(
                         Some(peer_addr),
                         &t.src_buf[..read_bytes],
                         &mut t.dst_buf[..],
@@ -961,7 +963,10 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(
+                                    &peer.tunnel.read().peer_static_public().to_bytes(),
+                                    packet,
+                                ) {
                                     continue;
                                 }
                             }
@@ -978,7 +983,10 @@ impl Device {
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
                             if let Some(callback) = &d.config.firewall_process_inbound_callback {
-                                if !callback(&peer.tunnel.peer_static_public().to_bytes(), packet) {
+                                if !callback(
+                                    &peer.tunnel.read().peer_static_public().to_bytes(),
+                                    packet,
+                                ) {
                                     continue;
                                 }
                             }
@@ -997,8 +1005,10 @@ impl Device {
 
                     if flush {
                         // Flush pending queue
-                        while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.decapsulate(None, &[], &mut t.dst_buf[..])
+                        while let TunnResult::WriteToNetwork(packet) = peer
+                            .tunnel
+                            .write()
+                            .decapsulate(None, &[], &mut t.dst_buf[..])
                         {
                             if let Err(err) = udp.send(packet) {
                                 tracing::warn!(message="Failed to flush queue", error = ?err);
@@ -1065,18 +1075,18 @@ impl Device {
                     };
 
                     if let Some(callback) = &d.config.firewall_process_outbound_callback {
-                        if !callback(&peer.tunnel.peer_static_public().to_bytes(), src) {
+                        if !callback(&peer.tunnel.read().peer_static_public().to_bytes(), src) {
                             continue;
                         }
                     }
 
                     let mut public_key = String::with_capacity(32);
-                    for byte in peer.tunnel.peer_static_public().as_bytes() {
+                    for byte in peer.tunnel.read().peer_static_public().as_bytes() {
                         let pub_symbol = format!("{:02X}", byte);
                         public_key.push_str(&pub_symbol);
                     }
 
-                    match peer.tunnel.encapsulate(src, &mut t.dst_buf[..]) {
+                    match peer.tunnel.write().encapsulate(src, &mut t.dst_buf[..]) {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
                             tracing::error!(message = "Encapsulate error",
