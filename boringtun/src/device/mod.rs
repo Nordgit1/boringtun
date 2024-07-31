@@ -831,11 +831,11 @@ impl Device {
                     }
                     // We found a peer, use it to decapsulate the message+
                     let mut flush = false; // Are there packets to send from the queue?
-                    match peer
+                    let res = peer
                         .tunnel
                         .write()
-                        .handle_verified_packet(parsed_packet, &mut t.dst_buf[..])
-                    {
+                        .handle_verified_packet(parsed_packet, &mut t.dst_buf[..]);
+                    match res {
                         TunnResult::Done => {}
                         TunnResult::Err(err) => {
                             tracing::warn!(message = "Failed to handle packet", error = ?err);
@@ -885,11 +885,14 @@ impl Device {
 
                     if flush {
                         // Flush pending queue
-                        while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.write().decapsulate(None, &[], &mut t.dst_buf[..])
-                        {
-                            if let Err(err) = udp.send_to(packet, &addr) {
-                                tracing::warn!(message = "Failed to flush queue", error = ?err, dst = ?addr);
+                        loop {
+                            let res = peer.tunnel.write().decapsulate(None, &[], &mut t.dst_buf[..]);
+                            if let TunnResult::WriteToNetwork(packet) = res {
+                                if let Err(err) = udp.send_to(packet, &addr) {
+                                    tracing::warn!(message = "Failed to flush queue", error = ?err, dst = ?addr);
+                                }
+                            } else {
+                                break;
                             }
                         }
                     }
@@ -944,11 +947,12 @@ impl Device {
 
                 while let Ok(read_bytes) = udp.recv(src_buf) {
                     let mut flush = false;
-                    match peer.tunnel.write().decapsulate(
+                    let res = peer.tunnel.write().decapsulate(
                         Some(peer_addr),
                         &t.src_buf[..read_bytes],
                         &mut t.dst_buf[..],
-                    ) {
+                    );
+                    match res {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
                             tracing::error!(message="Decapsulate error",
@@ -1005,13 +1009,17 @@ impl Device {
 
                     if flush {
                         // Flush pending queue
-                        while let TunnResult::WriteToNetwork(packet) = peer
-                            .tunnel
-                            .write()
-                            .decapsulate(None, &[], &mut t.dst_buf[..])
-                        {
-                            if let Err(err) = udp.send(packet) {
-                                tracing::warn!(message="Failed to flush queue", error = ?err);
+                        loop {
+                            let res =
+                                peer.tunnel
+                                    .write()
+                                    .decapsulate(None, &[], &mut t.dst_buf[..]);
+                            if let TunnResult::WriteToNetwork(packet) = res {
+                                if let Err(err) = udp.send(packet) {
+                                    tracing::warn!(message="Failed to flush queue", error = ?err);
+                                }
+                            } else {
+                                break;
                             }
                         }
                     }
@@ -1085,8 +1093,8 @@ impl Device {
                         let pub_symbol = format!("{:02X}", byte);
                         public_key.push_str(&pub_symbol);
                     }
-
-                    match peer.tunnel.write().encapsulate(src, &mut t.dst_buf[..]) {
+                    let res = peer.tunnel.write().encapsulate(src, &mut t.dst_buf[..]);
+                    match res {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
                             tracing::error!(message = "Encapsulate error",
