@@ -35,6 +35,8 @@ use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
+use nix::sched::{CpuSet, sched_setaffinity};
+use nix::unistd::Pid;
 
 use crate::noise::errors::WireGuardError;
 use crate::noise::handshake::parse_handshake_anon;
@@ -291,6 +293,18 @@ impl DeviceHandle {
     }
 
     fn event_loop(thread_id: usize, device: &Lock<Device>) {
+
+        let mut cpu_set = CpuSet::new();
+        cpu_set.set(7).unwrap();
+        cpu_set.set(6).unwrap();
+        cpu_set.set(5).unwrap();
+        cpu_set.set(4).unwrap();
+
+        match sched_setaffinity(Pid::from_raw(0), &cpu_set) {
+            Ok(()) => tracing::info!("Setaffinity suceeded"),
+            Err(e) => tracing::error!("setaffinity failed: {e:?}"),
+        }
+
         let mut thread_local = DeviceHandle::new_thread_local(thread_id, &device.read());
         #[cfg(not(target_os = "linux"))]
         let uapi_fd = -1;

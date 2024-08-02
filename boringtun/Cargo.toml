@@ -48,6 +48,7 @@ dispatch = { git = "https://github.com/NordSecurity/rust-dispatch.git", rev = "1
 nix = { version = "0.28", default-features = false, features = [
     "time",
     "user",
+    "sched",
 ] }
 
 [dev-dependencies]
